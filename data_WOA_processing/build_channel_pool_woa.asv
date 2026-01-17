@@ -1,0 +1,220 @@
+function ChannelPool = build_channel_pool_woa(arr_dir, max_paths, normalize_amplitude)
+
+if nargin < 2 || isempty(max_paths)
+    max_paths = 32;
+end
+if nargin < 3 || isempty(normalize_amplitude)
+    normalize_amplitude = true;
+end
+
+arr_files = dir(fullfile(arr_dir, '*.arr'));
+if isempty(arr_files)
+    error('No .arr files found in directory: %s', arr_dir);
+end
+
+ChannelPool = struct('Amp', {}, 'tau', {}, 'tau_rel', {}, 'power_db', {}, 'Npaths', {}, 'meta', {});
+
+idx = 1;
+for k = 1:numel(arr_files)
+    arr_name = arr_files(k).name;
+    arr_path = fullfile(arr_dir, arr_name);
+    fprintf('[%d/%d] Reading arrivals: %s\n', k, numel(arr_files), arr_name);
+
+    try
+        [Arr, Pos] = read_arrivals_bin(arr_path);
+    catch ME
+        warning('Failed to read %s : %s', arr_path, ME.message);
+        continue;
+    end
+
+    % Pos.r.r : ranges (m)
+    % Pos.s.z : source depths (m)
+    % Pos.r.z : receiver depths (m)
+    if ~isfield(Pos, 'r') || ~isfield(Pos.r, 'r') || ~isfield(Pos, 'z')
+        % attempt alternative field names
+        % best effort: skip if required fields are missing
+        warning('Pos structure from %s missing expected fields. Skipping file.', arr_name);
+        continue;
+    end
+
+    ranges = double(Pos.r.r(:));
+    src_depths = double(Pos.s.z(:));
+    rcv_depths = double(Pos.r.z(:));
+
+    % iterate over source depths / receiver depths / ranges
+    for isd = 1:numel(src_depths)
+        for irz = 1:numel(rcv_depths)
+            for irr = 1:numel(ranges)
+                % Arr indexing may vary; attempt robust access
+                try
+                    arrElem = Arr(irr, irz, isd);
+                catch
+                    % try different ordering (Arr(isRange,isSrc,isRcv)?) attempt permutations
+                    try
+                        arrElem = Arr(irr, isd, irz);
+                    catch
+                        try
+                            arrElem = Arr(isd, irz, irr);
+                        catch
+                            warning('Unexpected Arr indexing for file %s; skipping this triplet.', arr_name);
+                            continue;
+                        end
+                    end
+                end
+
+                % Narr: number of arrivals
+                Narr = 0;
+                if isfield(arrElem, 'Narr')
+                    Narr = double(arrElem.Narr);
+                else
+                    if isfield(arrElem, 'A')
+                        Narr = numel(arrElem.A);
+                    else
+                        warning('Arrival element has no Narr or A field in %s', arr_name);
+                        continue;
+                    end
+                end
+                if Narr <= 0
+                    continue;
+                end
+
+                % amplitudes and delays
+                if isfield(arrElem, 'A')
+                    Amp_all = double(arrElem.A(:));
+                else
+                    warning('No amplitude field A at Arr(%d,%d,%d) in %s', irr, irz, isd, arr_name);
+                    continue;
+                end
+                if isfield(arrElem, 'delay')
+                    tau_all = double(arrElem.delay(:)); % assume seconds
+                elseif isfield(arrElem, 't')
+                    tau_all = double(arrElem.t(:));
+                else
+                    warning('No delay field in Arr element for %s, skipping', arr_name);
+                    continue;
+                end
+
+                % ensure lengths match
+                Nmin = min(numel(Amp_all), numel(tau_all));
+                Amp_all = Amp_all(1:Nmin);
+                tau_all = tau_all(1:Nmin);
+
+                % sort by amplitude magnitude (power)
+                [~, order] = sort(abs(Amp_all).^2, 'descend');
+                keepN = min(max_paths, Nmin);
+                keep = order(1:keepN);
+
+                Amp = Amp_all(keep);
+                tau = tau_all(keep);
+
+                % align tau relative to strongest path (peak amplitude)
+                [~, imax_rel] = max(abs(Amp));
+                tau_ref = tau(imax_rel);
+                tau_rel = tau - tau_ref;
+
+                % optional normalization
+                if normalize_amplitude && ~isempty(Amp)
+                    Amp = Amp ./ max(abs(Amp));
+                end
+
+                % compute total power (sum of |A|^2)
+                total_power = sum(abs(Amp).^2);
+                power_db = 10 * log10(max(total_power, eps));
+
+                % meta information
+                meta = struct();
+                meta.range_m  = ranges(irr);
+                meta.src_z_m  = src_depths(isd);
+                meta.rcv_z_m  = rcv_depths(irz);
+                meta.arr_file = arr_name;
+
+                % try parse env metadata from filename
+                [meta.env_name, meta.ssp_type, meta.H, meta.bottom_type] = parse_env_meta(arr_name);
+
+                % store entry
+                ChannelPool(idx).Amp = Amp(:);
+                ChannelPool(idx).tau = tau(:);
+                ChannelPool(idx).tau_rel = tau_rel(:);
+                ChannelPool(idx).power_db = power_db;
+                ChannelPool(idx).Npaths = numel(Amp);
+                ChannelPool(idx).meta = meta;
+
+                idx = idx + 1;
+            end
+        end
+    end
+end
+
+fprintf('WOA Channel pool built: total %d channel entries.\n', numel(ChannelPool));
+end
+
+%% ------------------------------------------------------------------------
+function [env_name, ssp_type, H, bottom_type] = parse_env_meta(filename)
+% Attempt to parse env metadata from filename.
+% Expected patterns (examples):
+%   env_003_munk_H100_R500_sand.env / env_003_munk_H100_R500_sand.arr
+%   woa_env_001_munk_H100_R500_sand.arr
+% Returns empty strings / NaN where parse fails.
+
+[~, name, ~] = fileparts(filename);
+env_name = name;
+ssp_type = '';
+H = NaN;
+bottom_type = '';
+
+% split by underscores
+parts = split(name, {'_','-'});
+parts = parts(:);
+
+% try find typical tokens
+% search for known SSP types in parts
+ssp_candidates = {'munk','summer','isothermal','winter','deep','summer_shallow','winter_shallow','deep_channel'};
+for i=1:numel(parts)
+    p = lower(parts{i});
+    for j=1:numel(ssp_candidates)
+        if contains(p, ssp_candidates{j})
+            ssp_type = ssp_candidates{j};
+            break;
+        end
+    end
+    if ~isempty(ssp_type), break; end
+end
+
+% find H token like 'H100' or 'H200'
+for i=1:numel(parts)
+    p = parts{i};
+    if startsWith(lower(p), 'h')
+        numstr = regexp(p, '\d+','match','once');
+        if ~isempty(numstr)
+            H = str2double(numstr);
+            break;
+        end
+    end
+end
+
+% find bottom type token (sand/mud)
+for i=1:numel(parts)
+    p = lower(parts{i});
+    if contains(p, 'sand')
+        bottom_type = 'sand'; break;
+    elseif contains(p, 'mud')
+        bottom_type = 'mud'; break;
+    end
+end
+
+% fallback heuristics: search anywhere for numbers that could be H if not found
+if isnan(H)
+    num_tokens = regexp(name, '[0-9]+','match');
+    if ~isempty(num_tokens)
+        % pick first reasonable number (>10 and <10000) as H estimate
+        for nt = 1:numel(num_tokens)
+            val = str2double(num_tokens{nt});
+            if val > 10 && val < 10000
+                H = val;
+                break;
+            end
+        end
+    end
+end
+
+end
