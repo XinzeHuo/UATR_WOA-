@@ -16,7 +16,7 @@ switch lower(ssp_type)
         lat = 60.0; lon = -30.0; month = 0;    % 年平均
     case 'winter_shallow'
         % 冬季浅海（混合表层）
-        lat = 34.0; lon = 120.0; month = 1;    % January (冬季)
+        lat = 34.0; lon = 125.0; month = 1;    % January (冬季)
     case 'deep_channel'
         % 深水声道示例
         lat = -20.0; lon = 160.0; month = 0;
