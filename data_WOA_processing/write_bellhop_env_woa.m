@@ -41,7 +41,9 @@ fprintf(fid, '/\n');
 
 % ---------------- BOTTOM ----------------
 fprintf(fid, '''A''\n');        % Ray trace
-fprintf(fid, '201  -30.0  30.0  /\n');
+fprintf(fid, '201\n');
+fprintf(fid, '-30.0  30.0  /\n');
 fprintf(fid, '0.0  150.0  1.5\n');
 
 fclose(fid);
+
