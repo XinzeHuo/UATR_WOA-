@@ -148,13 +148,14 @@ for i = 1:num_files
         if isfield(ch,'meta')
             meta_ch = ch.meta;
             if isfield(meta_ch,'arr_file'), env_file = meta_ch.arr_file; end
-            if isfield(meta_ch,'range_m'),  range_m  = meta_ch.range_m;  end
-            if isfield(meta_ch,'src_z_m'),  src_z    = meta_ch.src_z_m;  end
-            if isfield(meta_ch,'rcv_z_m'),  rcv_z    = meta_ch.rcv_z_m;  end
+            if isfield(meta_ch,'range_m'),  range_m  = local_extract_numeric(meta_ch.range_m);  end
+            if isfield(meta_ch,'src_z_m'),  src_z    = local_extract_numeric(meta_ch.src_z_m);  end
+            if isfield(meta_ch,'rcv_z_m'),  rcv_z    = local_extract_numeric(meta_ch.rcv_z_m);  end
         end
         if isfield(ch,'Amp')
-            Npaths   = numel(ch.Amp);
-            power_db = 10*log10(sum(abs(ch.Amp).^2) + eps);
+            ch_Amp_numeric = local_extract_numeric(ch.Amp);
+            Npaths   = numel(ch_Amp_numeric);
+            power_db = 10*log10(sum(abs(ch_Amp_numeric).^2) + eps);
         end
 
         fprintf(logFID, '%d,%s,%s,%s,%d,%d,%d,%s,%.2f,%.2f,%.2f,%d,%.3f\n', ...
@@ -177,3 +178,32 @@ fclose(logFID);
 close(h);
 toc;
 fprintf('All done. Augmented data saved under: %s\nLog file: %s\n', OUTPUT_ROOT, LOG_FILE);
+
+%% Helper function to extract numeric values from potential structs
+function val = local_extract_numeric(field_val)
+% Helper to extract numeric value from field that might be a struct or array
+if isstruct(field_val)
+    % If it's a struct, try to find a numeric field
+    fn = fieldnames(field_val);
+    for i = 1:numel(fn)
+        tmp = field_val.(fn{i});
+        if isnumeric(tmp)
+            val = tmp;
+            % Log which field was extracted for debugging
+            if numel(fn) > 1
+                warning('Struct has multiple fields; extracted numeric value from field "%s"', fn{i});
+            end
+            return;
+        end
+    end
+    % If no numeric field found, return NaN
+    warning('Could not extract numeric value from struct (fields: %s), using NaN', strjoin(fn, ', '));
+    val = NaN;
+elseif isnumeric(field_val)
+    val = field_val;
+else
+    % Handle other types (cell, etc.)
+    warning('Unexpected field type (%s), using NaN', class(field_val));
+    val = NaN;
+end
+end

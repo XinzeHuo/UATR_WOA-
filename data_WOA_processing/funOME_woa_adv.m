@@ -29,8 +29,11 @@ N = length(x);
 if ~isfield(ch,'Amp') || ~isfield(ch,'tau')
     error('ch must contain fields Amp and tau.');
 end
-Amp0 = double(ch.Amp(:).');
-tau0 = double(ch.tau(:).');
+% Robustly extract Amp and tau in case they are wrapped in structs
+Amp0 = double(local_extract_numeric(ch.Amp));
+Amp0 = Amp0(:).';
+tau0 = double(local_extract_numeric(ch.tau));
+tau0 = tau0(:).';
 
 P = numel(Amp0);
 if P == 0
@@ -72,7 +75,7 @@ phase = exp(-1j * 2 * pi * (tau(:) * fk));
 if cfg_used.use_absorption
     alpha_db_per_km = thorp_alpha(fk);
     if isfield(ch, 'meta') && isfield(ch.meta, 'range_m')
-        d_all = ch.meta.range_m;
+        d_all = local_extract_numeric(ch.meta.range_m);
         if numel(d_all) == 1
             d_all = repmat(d_all, size(Amp));
         end
@@ -116,4 +119,32 @@ f2    = f_khz.^2;
 alpha_db = 0.11 * f2 ./ (1 + f2) + 44 * f2 ./ (4100 + f2) + 2.75e-4 * f2 + 0.003;
 alpha_db(~isfinite(alpha_db)) = max(alpha_db(isfinite(alpha_db)));
 alpha_db(alpha_db < 0) = 0;
+end
+
+function val = local_extract_numeric(field_val)
+% Helper to extract numeric value from field that might be a struct or array
+if isstruct(field_val)
+    % If it's a struct, try to find a numeric field
+    fn = fieldnames(field_val);
+    for i = 1:numel(fn)
+        tmp = field_val.(fn{i});
+        if isnumeric(tmp)
+            val = tmp;
+            % Log which field was extracted for debugging
+            if numel(fn) > 1
+                warning('Struct has multiple fields; extracted numeric value from field "%s"', fn{i});
+            end
+            return;
+        end
+    end
+    % If no numeric field found, return NaN
+    warning('Could not extract numeric value from struct (fields: %s), using NaN', strjoin(fn, ', '));
+    val = NaN;
+elseif isnumeric(field_val)
+    val = field_val;
+else
+    % Handle other types (cell, etc.)
+    warning('Unexpected field type (%s), using NaN', class(field_val));
+    val = NaN;
+end
 end
