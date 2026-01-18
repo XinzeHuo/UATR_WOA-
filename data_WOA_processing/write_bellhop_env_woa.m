@@ -108,7 +108,9 @@ try
     fprintf(fid, '''A''\n');        % Ray trace
     fprintf(fid, '201\n');
     fprintf(fid, '-30.0  30.0  /\n');
-    fprintf(fid, '0.0  150.0  1.5\n');
+    zbox     = max(H, max(rcv_z(:)) * 1.1);        % allow beams to reach deepest receiver
+    rbox_km  = max(r_vec(:)) / 1000 * 1.2;         % ensure propagation covers max range
+    fprintf(fid, '0.0  %.1f  %.3f\n', zbox, rbox_km);
 
     fclose(fid);
 catch ME
