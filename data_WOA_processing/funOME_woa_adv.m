@@ -29,8 +29,11 @@ N = length(x);
 if ~isfield(ch,'Amp') || ~isfield(ch,'tau')
     error('ch must contain fields Amp and tau.');
 end
-Amp0 = double(ch.Amp(:).');
-tau0 = double(ch.tau(:).');
+% Robustly extract numeric values from potentially struct-wrapped fields
+Amp0 = local_extract_numeric(ch.Amp, 'Amp');
+Amp0 = double(Amp0(:).');
+tau0 = local_extract_numeric(ch.tau, 'tau');
+tau0 = double(tau0(:).');
 
 P = numel(Amp0);
 if P == 0
@@ -72,7 +75,8 @@ phase = exp(-1j * 2 * pi * (tau(:) * fk));
 if cfg_used.use_absorption
     alpha_db_per_km = thorp_alpha(fk);
     if isfield(ch, 'meta') && isfield(ch.meta, 'range_m')
-        d_all = ch.meta.range_m;
+        % Robustly extract numeric value from potentially struct-wrapped range_m
+        d_all = local_extract_numeric(ch.meta.range_m, 'range_m');
         if numel(d_all) == 1
             d_all = repmat(d_all, size(Amp));
         end
@@ -116,4 +120,41 @@ f2    = f_khz.^2;
 alpha_db = 0.11 * f2 ./ (1 + f2) + 44 * f2 ./ (4100 + f2) + 2.75e-4 * f2 + 0.003;
 alpha_db(~isfinite(alpha_db)) = max(alpha_db(isfinite(alpha_db)));
 alpha_db(alpha_db < 0) = 0;
+end
+
+function val = local_extract_numeric(field, field_name)
+% Extract numeric value from a field that may be a struct or numeric array
+% If field is a struct, tries to extract numeric data from common field names
+    if isnumeric(field)
+        val = field;
+    elseif isstruct(field)
+        % Try common field names that might contain the actual numeric value
+        possible_fields = {'data', 'value', 'val', field_name};
+        val = [];
+        for i = 1:numel(possible_fields)
+            if isfield(field, possible_fields{i})
+                candidate = field.(possible_fields{i});
+                if isnumeric(candidate)
+                    val = candidate;
+                    break;
+                end
+            end
+        end
+        if isempty(val)
+            % If no numeric field found, try to get first numeric field
+            fnames = fieldnames(field);
+            for i = 1:numel(fnames)
+                candidate = field.(fnames{i});
+                if isnumeric(candidate)
+                    val = candidate;
+                    break;
+                end
+            end
+        end
+        if isempty(val)
+            error('Cannot extract numeric value from struct field: %s', field_name);
+        end
+    else
+        error('Field %s is neither numeric nor struct (type: %s)', field_name, class(field));
+    end
 end
