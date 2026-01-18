@@ -189,17 +189,21 @@ if isstruct(field_val)
         tmp = field_val.(fn{i});
         if isnumeric(tmp)
             val = tmp;
+            % Log which field was extracted for debugging
+            if numel(fn) > 1
+                warning('Struct has multiple fields; extracted numeric value from field "%s"', fn{i});
+            end
             return;
         end
     end
     % If no numeric field found, return NaN
-    warning('Could not extract numeric value from struct, using NaN');
+    warning('Could not extract numeric value from struct (fields: %s), using NaN', strjoin(fn, ', '));
     val = NaN;
 elseif isnumeric(field_val)
     val = field_val;
 else
     % Handle other types (cell, etc.)
-    warning('Unexpected field type, using NaN');
+    warning('Unexpected field type (%s), using NaN', class(field_val));
     val = NaN;
 end
 end
