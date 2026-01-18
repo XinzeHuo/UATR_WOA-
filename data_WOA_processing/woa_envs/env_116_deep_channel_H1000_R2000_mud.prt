@@ -1,0 +1,161 @@
+ BELLHOP- WOA-based SSP: woa_envs\env_116_deep_channel_H1000_R2000_mud           
+ frequency =   1000.     Hz
+
+ Dummy parameter NMedia =            1
+
+     C-LINEAR approximation to SSP
+     Attenuation units: dB/wavelength
+     VACUUM
+
+ Depth =    1000.0000000000000      m
+
+ C-Linear SSP option
+
+ Sound speed profile:
+      0.00      1536.94
+     20.41      1536.78
+     40.82      1536.32
+     61.22      1534.87
+     81.63      1533.14
+    102.04      1531.67
+    122.45      1530.30
+    142.86      1529.19
+    163.27      1528.15
+    183.67      1527.15
+    204.08      1526.16
+    224.49      1525.09
+    244.90      1524.00
+    265.31      1522.65
+    285.71      1521.23
+    306.12      1519.81
+    326.53      1518.34
+    346.94      1516.58
+    367.35      1514.73
+    387.76      1512.77
+    408.16      1510.74
+    428.57      1508.70
+    448.98      1506.64
+    469.39      1504.54
+    489.80      1502.63
+    510.20      1500.85
+    530.61      1499.12
+    551.02      1497.41
+    571.43      1496.05
+    591.84      1494.69
+    612.24      1493.50
+    632.65      1492.41
+    653.06      1491.37
+    673.47      1490.62
+    693.88      1489.87
+    714.29      1489.22
+    734.69      1488.61
+    755.10      1488.05
+    775.51      1487.66
+    795.92      1487.28
+    816.33      1486.94
+    836.73      1486.62
+    857.14      1486.33
+    877.55      1486.12
+    897.96      1485.91
+    918.37      1485.73
+    938.78      1485.56
+    959.18      1485.41
+    979.59      1485.31
+   1000.00      1485.20
+
+                                 ( RMS roughness =   0.00     )
+     Perfectly RIGID
+
+ Number of sources   =            1
+ Source depths (m)
+   20.0000    
+
+ Number of receivers =            2
+ Receiver depths (m)
+   200.000       600.000    
+
+ Number of ranges   =            1
+ Receiver ranges (km)
+   2.00000    
+
+ Arrivals calculation, ASCII  file output
+ Geometric hat beams
+ Point source (cylindrical coordinates)
+ Rectilinear receiver grid: Receivers at rr( : ) x rd( : )
+
+ Number of beams   =          201
+ Beam take-off angles (degrees)
+  -30.0000      -29.7000      -29.4000      -29.1000      -28.8000    
+  -28.5000      -28.2000      -27.9000      -27.6000      -27.3000    
+  -27.0000      -26.7000      -26.4000      -26.1000      -25.8000    
+  -25.5000      -25.2000      -24.9000      -24.6000      -24.3000    
+  -24.0000    
+
+ Step length,     deltas =    100.00000000000000      m
+
+ Maximum ray Depth, zBox =    150.00000000000000      m
+ Maximum ray range, rBox =    1500.0000000000000      m
+ No beam shift in effect
+
+
+ ( Maximum # of arrivals =      1000000 )
+
+ Tracing beam            1  -30.000000000000000     
+
+ Minimum width beams                     
+ halfwidth  =    22.117262262150472     
+ EpsOpt     =  (  0.0000000000000000     ,  1536783.2141107302     )
+ EpsMult    =    1.0000000000000000     
+
+ Tracing beam            5  -28.800000000000001     
+ Tracing beam            9  -27.599999999999998     
+ Tracing beam           13  -26.399999999999999     
+ Tracing beam           17  -25.199999999999999     
+ Tracing beam           21  -24.000000000000000     
+ Tracing beam           25  -22.800000000000001     
+ Tracing beam           29  -21.600000000000001     
+ Tracing beam           33  -20.399999999999999     
+ Tracing beam           37  -19.199999999999999     
+ Tracing beam           41  -17.999999999999996     
+ Tracing beam           45  -16.799999999999997     
+ Tracing beam           49  -15.600000000000000     
+ Tracing beam           53  -14.400000000000000     
+ Tracing beam           57  -13.200000000000001     
+ Tracing beam           61  -12.000000000000000     
+ Tracing beam           65  -10.800000000000001     
+ Tracing beam           69  -9.6000000000000014     
+ Tracing beam           73  -8.3999999999999986     
+ Tracing beam           77  -7.2000000000000002     
+ Tracing beam           81  -6.0000000000000009     
+ Tracing beam           85  -4.8000000000000007     
+ Tracing beam           89  -3.6000000000000010     
+ Tracing beam           93  -2.4000000000000012     
+ Tracing beam           97  -1.2000000000000011     
+ Tracing beam          101 -1.11022302462515654E-015
+ Tracing beam          105   1.1999999999999988     
+ Tracing beam          109   2.3999999999999986     
+ Tracing beam          113   3.5999999999999988     
+ Tracing beam          117   4.7999999999999980     
+ Tracing beam          121   5.9999999999999982     
+ Tracing beam          125   7.1999999999999993     
+ Tracing beam          129   8.3999999999999986     
+ Tracing beam          133   9.5999999999999961     
+ Tracing beam          137   10.799999999999999     
+ Tracing beam          141   11.999999999999998     
+ Tracing beam          145   13.199999999999999     
+ Tracing beam          149   14.399999999999999     
+ Tracing beam          153   15.599999999999996     
+ Tracing beam          157   16.799999999999997     
+ Tracing beam          161   17.999999999999996     
+ Tracing beam          165   19.199999999999999     
+ Tracing beam          169   20.399999999999999     
+ Tracing beam          173   21.599999999999998     
+ Tracing beam          177   22.799999999999997     
+ Tracing beam          181   23.999999999999996     
+ Tracing beam          185   25.199999999999999     
+ Tracing beam          189   26.399999999999999     
+ Tracing beam          193   27.599999999999998     
+ Tracing beam          197   28.799999999999997     
+ Tracing beam          201   29.999999999999993     
+
+ CPU Time =       0.156E-01s
