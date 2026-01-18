@@ -1,194 +1,127 @@
-% apply_woa_multipath_to_ShipsEar.m
-clearvars;
-close all;
-clc;
+function [y, Hk, cfg_used] = funOME_woa_adv(x, fs, ch, cfg)
+% 高级 WOA 多径叠加：shadowing + delay jitter + Thorp 吸收
 
-%% 1. 配置
-METADATA_PATH    = 'E:\rcq\pythonProject\Data\ShipsEar_16k_30s_hop15\metadata.csv';
-CLEAN_DATA_ROOT  = 'E:\rcq\pythonProject\Data\ShipsEar_16k_30s_hop15';
-OUTPUT_ROOT      = 'E:\rcq\pythonProject\Data\ShipsEar_16k_30s_hop15_WOA';
-CHANNEL_POOL_MAT = 'E:\rcq\pythonProject\UWTRL-MEG-main\data_gen\ChannelPool_WOA.mat';
-
-TARGET_FS            = 16000;
-RESAMPLE_IF_MISMATCH = true;
-RNG_SEED             = 20260114;
-
-cfg.use_shadowing    = true;
-cfg.shadow_sigma_db  = 3.0;
-cfg.use_delay_jitter = true;
-cfg.delay_jitter_max = 0.5e-3;
-cfg.use_absorption   = true;
-cfg.normalize_output = true;
-cfg.output_mode      = 'same';
-cfg.seed             = [];
-
-CHANNEL_SELECTION_MODE = 'random';
-SEEN_CHANNEL_IDX   = [];
-UNSEEN_CHANNEL_IDX = [];
-
-WRITE_WAV = true;
-OVERWRITE = false;
-LOG_FILE  = fullfile(OUTPUT_ROOT, 'woa_augmentation_log.csv');
-
-USE_PARPOOL = false;
-
-%% 2. 初始化
-if ~isempty(RNG_SEED)
-    rng(RNG_SEED);
-end
-
-if ~exist(CHANNEL_POOL_MAT, 'file')
-    error('Channel pool file not found: %s', CHANNEL_POOL_MAT);
-end
-S = load(CHANNEL_POOL_MAT, 'ChannelPool');
-if ~isfield(S, 'ChannelPool')
-    error('Loaded MAT does not contain ChannelPool variable.');
-end
-ChannelPool  = S.ChannelPool;
-num_channels = numel(ChannelPool);
-fprintf('Loaded ChannelPool with %d entries.\n', num_channels);
-
-if strcmpi(CHANNEL_SELECTION_MODE, 'by_split')
-    if isempty(SEEN_CHANNEL_IDX) || isempty(UNSEEN_CHANNEL_IDX)
-        error('CHANNEL_SELECTION_MODE="by_split" requires SEEN_CHANNEL_IDX and UNSEEN_CHANNEL_IDX to be set.');
+if nargin < 4, cfg = struct(); end
+cfg_defaults = struct( ...
+    'use_shadowing', true, ...
+    'shadow_sigma_db', 3.0, ...
+    'use_delay_jitter', true, ...
+    'delay_jitter_max', 0.5e-3, ...
+    'use_absorption', true, ...
+    'normalize_output', true, ...
+    'output_mode', 'same', ... % 'same' or 'full'
+    'seed', [] ...
+    );
+cfg_used = cfg_defaults;
+if ~isempty(cfg)
+    fn = fieldnames(cfg);
+    for i=1:numel(fn)
+        cfg_used.(fn{i}) = cfg.(fn{i});
     end
 end
 
-if ~exist(METADATA_PATH, 'file')
-    error('Metadata CSV not found: %s', METADATA_PATH);
-end
-opts = detectImportOptions(METADATA_PATH);
-if ismember('filepath', opts.VariableNames)
-    opts = setvartype(opts, 'filepath', 'string');
-end
-meta = readtable(METADATA_PATH, opts);
-num_files = height(meta);
-fprintf('Metadata rows: %d\n', num_files);
-
-if ~exist(OUTPUT_ROOT, 'dir')
-    mkdir(OUTPUT_ROOT);
+if ~isempty(cfg_used.seed)
+    rng(cfg_used.seed);
 end
 
-logFID = fopen(LOG_FILE, 'w');
-if logFID == -1
-    error('Cannot open log file for writing: %s', LOG_FILE);
+x = x(:);
+N = length(x);
+if ~isfield(ch,'Amp') || ~isfield(ch,'tau')
+    error('ch must contain fields Amp and tau.');
 end
-fprintf(logFID, 'idx,rel_path,in_path,out_path,orig_fs,used_fs,channel_idx,env_file,range_m,src_z,rcv_z,Npaths,power_db\n');
+% Robustly extract numeric values from potentially struct-wrapped fields
+Amp0 = local_extract_numeric(ch.Amp, 'Amp');
+Amp0 = double(Amp0(:).');
+tau0 = local_extract_numeric(ch.tau, 'tau');
+tau0 = double(tau0(:).');
 
-if USE_PARPOOL
-    error('USE_PARPOOL=true 尚未实现并发安全写入逻辑，请先设置为 false。');
+P = numel(Amp0);
+if P == 0
+    y  = zeros(N,1);
+    Hk = [];
+    return;
 end
 
-h = waitbar(0,'WOA augmentation running...');
-tic;
-fprintf('Start augmentation loop...\n');
+% 1) shadowing
+if cfg_used.use_shadowing
+    sigma_db = cfg_used.shadow_sigma_db;
+    dB_perturb = sigma_db * randn(size(Amp0));
+    Amp = Amp0 .* 10.^(dB_perturb/20);
+else
+    Amp = Amp0;
+end
 
-for i = 1:num_files
-    rel_path = '';
-    try
-        rel_path    = char(meta.filepath(i));
-        in_wav_path = fullfile(CLEAN_DATA_ROOT, rel_path);
+% 2) delay jitter
+if cfg_used.use_delay_jitter
+    dt_max = cfg_used.delay_jitter_max;
+    dt  = (2*rand(size(tau0)) - 1) * dt_max;
+    tau = tau0 + dt;
+else
+    tau = tau0;
+end
 
-        if ~exist(in_wav_path, 'file')
-            warning('File missing: %s (row %d)', in_wav_path, i);
-            fprintf(logFID, '%d,%s,%s,%s,%d,%d,%d,%s,%.2f,%.2f,%.2f,%d,%.3f\n', ...
-                i, rel_path, in_wav_path, 'MISSING', 0, 0, -1, '', NaN, NaN, NaN, 0, NaN);
-            continue;
+[~, imax] = max(abs(Amp));
+tau = tau - tau(imax);
+
+max_delay_samp = ceil(max(abs(tau)) * fs);
+Nfft = 2^nextpow2(N + max_delay_samp);
+
+Fx = fft(x, Nfft).';
+fk = (0:(Nfft-1)) * (fs / Nfft);
+
+phase = exp(-1j * 2 * pi * (tau(:) * fk));
+
+% 5) Thorp 吸收
+if cfg_used.use_absorption
+    alpha_db_per_km = thorp_alpha(fk);
+    if isfield(ch, 'meta') && isfield(ch.meta, 'range_m')
+        % Robustly extract numeric value from potentially struct-wrapped range_m
+        d_all = local_extract_numeric(ch.meta.range_m, 'range_m');
+        if numel(d_all) == 1
+            d_all = repmat(d_all, size(Amp));
         end
-
-        [x, fs] = audioread(in_wav_path);
-        if size(x,2) > 1
-            x = mean(x, 2);
-        end
-        orig_fs = fs;
-        if RESAMPLE_IF_MISMATCH && fs ~= TARGET_FS
-            x = resample(x, TARGET_FS, fs);
-            fs = TARGET_FS;
-        end
-
-        switch lower(CHANNEL_SELECTION_MODE)
-            case 'random'
-                ch_idx = randi(num_channels);
-            case 'by_split'
-                if ismember('split', meta.Properties.VariableNames)
-                    split_val = string(meta.split(i));
-                    if contains(lower(split_val), 'train')
-                        ch_idx = SEEN_CHANNEL_IDX(randi(numel(SEEN_CHANNEL_IDX)));
-                    else
-                        ch_idx = UNSEEN_CHANNEL_IDX(randi(numel(UNSEEN_CHANNEL_IDX)));
-                    end
-                else
-                    ch_idx = randi(num_channels);
-                end
-            otherwise
-                ch_idx = randi(num_channels);
-        end
-        ch = ChannelPool(ch_idx);
-
-        cfg_local       = cfg;
-        cfg_local.seed  = uint32(mod(double(i)*9973 + double(ch_idx)*1315423911, 2^31-1));
-
-        [y, Hk, cfg_used] = funOME_woa_adv(x, fs, ch, cfg_local); %#ok<NASGU>
-
-        out_wav_path = fullfile(OUTPUT_ROOT, rel_path);
-        out_dir      = fileparts(out_wav_path);
-        if ~exist(out_dir, 'dir')
-            mkdir(out_dir);
-        end
-        if WRITE_WAV
-            if exist(out_wav_path, 'file') && ~OVERWRITE
-                warning('Output exists and OVERWRITE=false. Skipping write: %s', out_wav_path);
-            else
-                audiowrite(out_wav_path, y, fs);
-            end
-        end
-
-        env_file = '';
-        range_m  = NaN; src_z = NaN; rcv_z = NaN; Npaths = NaN; power_db = NaN;
-        if isfield(ch,'meta')
-            meta_ch = ch.meta;
-            if isfield(meta_ch,'arr_file'), env_file = meta_ch.arr_file; end
-            if isfield(meta_ch,'range_m')
-                range_m = local_extract_numeric(meta_ch.range_m, 'range_m');
-                if numel(range_m) > 1, range_m = range_m(1); end
-            end
-            if isfield(meta_ch,'src_z_m')
-                src_z = local_extract_numeric(meta_ch.src_z_m, 'src_z_m');
-                if numel(src_z) > 1, src_z = src_z(1); end
-            end
-            if isfield(meta_ch,'rcv_z_m')
-                rcv_z = local_extract_numeric(meta_ch.rcv_z_m, 'rcv_z_m');
-                if numel(rcv_z) > 1, rcv_z = rcv_z(1); end
-            end
-        end
-        if isfield(ch,'Amp')
-            Amp_val = local_extract_numeric(ch.Amp, 'Amp');
-            Npaths   = numel(Amp_val);
-            power_db = 10*log10(sum(abs(Amp_val).^2) + eps);
-        end
-
-        fprintf(logFID, '%d,%s,%s,%s,%d,%d,%d,%s,%.2f,%.2f,%.2f,%d,%.3f\n', ...
-            i, rel_path, in_wav_path, out_wav_path, orig_fs, fs, ch_idx, ...
-            env_file, range_m, src_z, rcv_z, Npaths, power_db);
-
-    catch ME
-        fprintf('Error processing index %d (%s): %s\n', i, rel_path, ME.message);
-        % 保持列数一致写入占位
-        fprintf(logFID, '%d,%s,%s,%s,%d,%d,%d,%s,%.2f,%.2f,%.2f,%d,%.3f\n', ...
-            i, rel_path, 'ERROR', 'ERROR', 0, 0, -1, 'ERROR', NaN, NaN, NaN, 0, NaN);
+        d_all = double(d_all(:).');
+    else
+        warning('ch.meta.range_m not present; using nominal 1 km for absorption scaling.');
+        d_all = ones(1,P) * 1000;
     end
+    dist_km = d_all / 1e3;
+    G_mat = 10 .^ ( - (dist_km(:) * alpha_db_per_km) / 20 );
+else
+    G_mat = ones(P, Nfft);
+end
 
-    if mod(i,100)==0 || i==num_files
-        waitbar(i/num_files, h, sprintf('%d / %d processed', i, num_files));
+Amp_mat = Amp(:) * ones(1, Nfft);
+H_mat   = Amp_mat .* phase .* G_mat;
+Hk      = sum(H_mat, 1);
+
+Yk    = Fx .* Hk;
+y_full = ifft(Yk, Nfft).';
+
+if strcmpi(cfg_used.output_mode, 'full')
+    y = real(y_full(1:Nfft));
+else
+    y = real(y_full(1:N));
+end
+
+if cfg_used.normalize_output
+    rms_x = rms(x);
+    rms_y = rms(y);
+    if rms_y > eps
+        y = y * (rms_x / rms_y);
     end
 end
 
-fclose(logFID);
-close(h);
-toc;
-fprintf('All done. Augmented data saved under: %s\nLog file: %s\n', OUTPUT_ROOT, LOG_FILE);
+end
 
-%% Helper function to extract numeric values from potentially struct-wrapped fields
+function alpha_db = thorp_alpha(f_hz)
+f_khz = f_hz / 1e3;
+f2    = f_khz.^2;
+alpha_db = 0.11 * f2 ./ (1 + f2) + 44 * f2 ./ (4100 + f2) + 2.75e-4 * f2 + 0.003;
+alpha_db(~isfinite(alpha_db)) = max(alpha_db(isfinite(alpha_db)));
+alpha_db(alpha_db < 0) = 0;
+end
+
 function val = local_extract_numeric(field, field_name)
 % Extract numeric value from a field that may be a struct or numeric array
 % If field is a struct, tries to extract numeric data from common field names
@@ -219,11 +152,9 @@ function val = local_extract_numeric(field, field_name)
             end
         end
         if isempty(val)
-            warning('Cannot extract numeric value from struct field: %s. Using NaN.', field_name);
-            val = NaN;
+            error('Cannot extract numeric value from struct field: %s', field_name);
         end
     else
-        warning('Field %s is neither numeric nor struct (type: %s). Using NaN.', field_name, class(field));
-        val = NaN;
+        error('Field %s is neither numeric nor struct (type: %s)', field_name, class(field));
     end
 end
