@@ -17,7 +17,16 @@ if ~exist(matfile,'file')
     error('MAT file not found: %s', matfile);
 end
 data = load(matfile);
+
+% 若 load 返回的顶层只有一个字段且该字段本身是 struct，则下钻一层，避免后续点索引报错
+if ~isstruct(data)
+    error('Loaded MAT is not a struct; dot indexing unsupported (got %s).', class(data));
+end
 fn = fieldnames(data);
+if numel(fn)==1 && isstruct(data.(fn{1}))
+    data = data.(fn{1});
+    fn = fieldnames(data);
+end
 
 % ---- 自动识别或查找经纬深度向量 ----
 lat_names   = {'lat','latitude','y','LAT','latitude_g','Lat'};
