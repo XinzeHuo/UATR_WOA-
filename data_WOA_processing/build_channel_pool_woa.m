@@ -108,21 +108,48 @@ function ChannelPool = build_channel_pool_woa(arr_dir, max_paths, normalize_ampl
 
             % 如果 Pos 里有可用字段就尝试取一下，但不强依赖
             if exist('Pos','var') && isstruct(Pos)
-                % 下面是一些“尽力而为”的猜测式读取，不会抛错
-                if isfield(Pos, 'r') && numel(Pos.r) >= 1
-                    meta.range_m = Pos.r(1);    % 有些实现单位是 m，有些是 km，你可以后续自行检查
-                elseif isfield(Pos, 'rr') && numel(Pos.rr) >= 1
-                    meta.range_m = Pos.rr(1);
+                % Compatible with nested structure returned by read_arrivals_asc: Pos.r.r / Pos.r.z / Pos.s.z
+                if isnan(meta.range_m)
+                    v = try_get_numeric(Pos, {'r','r'}, 1);
+                    if ~isnan(v), meta.range_m = v; end
                 end
-                if isfield(Pos, 'sd') && numel(Pos.sd) >= 1
-                    meta.src_z_m = Pos.sd(1);
-                elseif isfield(Pos, 'zs') && numel(Pos.zs) >= 1
-                    meta.src_z_m = Pos.zs(1);
+                if isnan(meta.range_m)
+                    v = try_get_numeric(Pos, {'r'}, 1);
+                    if ~isnan(v), meta.range_m = v; end
                 end
-                if isfield(Pos, 'rd') && numel(Pos.rd) >= ich
-                    meta.rcv_z_m = Pos.rd(ich);
-                elseif isfield(Pos, 'zr') && numel(Pos.zr) >= ich
-                    meta.rcv_z_m = Pos.zr(ich);
+                if isnan(meta.range_m)
+                    v = try_get_numeric(Pos, {'rr'}, 1);
+                    if ~isnan(v), meta.range_m = v; end
+                end
+
+                if isnan(meta.src_z_m)
+                    v = try_get_numeric(Pos, {'s','z'}, 1);
+                    if ~isnan(v), meta.src_z_m = v; end
+                end
+                if isnan(meta.src_z_m)
+                    v = try_get_numeric(Pos, {'s'}, 1);
+                    if ~isnan(v), meta.src_z_m = v; end
+                end
+                if isnan(meta.src_z_m)
+                    v = try_get_numeric(Pos, {'sd'}, 1);
+                    if ~isnan(v), meta.src_z_m = v; end
+                end
+                if isnan(meta.src_z_m)
+                    v = try_get_numeric(Pos, {'zs'}, 1);
+                    if ~isnan(v), meta.src_z_m = v; end
+                end
+
+                if isnan(meta.rcv_z_m)
+                    v = try_get_numeric(Pos, {'r','z'}, ich);
+                    if ~isnan(v), meta.rcv_z_m = v; end
+                end
+                if isnan(meta.rcv_z_m)
+                    v = try_get_numeric(Pos, {'rd'}, ich);
+                    if ~isnan(v), meta.rcv_z_m = v; end
+                end
+                if isnan(meta.rcv_z_m)
+                    v = try_get_numeric(Pos, {'zr'}, ich);
+                    if ~isnan(v), meta.rcv_z_m = v; end
                 end
             end
 
@@ -142,6 +169,25 @@ function ChannelPool = build_channel_pool_woa(arr_dir, max_paths, normalize_ampl
     end
 
     fprintf('WOA Channel pool built: total %d channel entries.\n', numel(ChannelPool));
+end
+
+% 简单获取嵌套字段的数值（如果存在且为 numeric），否则返回 NaN
+function val = try_get_numeric(s, path_cells, idx)
+    if nargin < 3 || isempty(idx)
+        idx = 1;
+    end
+    val = NaN;
+    cur = s;
+    for k = 1:numel(path_cells)
+        key = path_cells{k};
+        if ~isstruct(cur) || ~isfield(cur, key)
+            return;
+        end
+        cur = cur.(key);
+    end
+    if isnumeric(cur) && ~isempty(cur) && numel(cur) >= idx
+        val = cur(idx);
+    end
 end
 
 % -------------------------------------------------------------------------
