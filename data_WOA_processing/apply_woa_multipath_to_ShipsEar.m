@@ -7,7 +7,7 @@ clc;
 METADATA_PATH    = 'E:\rcq\pythonProject\Data\ShipsEar_16k_30s_hop15\metadata.csv';
 CLEAN_DATA_ROOT  = 'E:\rcq\pythonProject\Data\ShipsEar_16k_30s_hop15';
 OUTPUT_ROOT      = 'E:\rcq\pythonProject\Data\ShipsEar_16k_30s_hop15_WOA';
-CHANNEL_POOL_MAT = 'E:\rcq\pythonProject\Data\WOA23_mat\woa23_00.mat';
+CHANNEL_POOL_MAT = 'E:\rcq\pythonProject\UWTRL-MEG-main\data_gen\ChannelPool_WOA.mat';
 
 TARGET_FS            = 16000;
 RESAMPLE_IF_MISMATCH = true;
@@ -148,13 +148,23 @@ for i = 1:num_files
         if isfield(ch,'meta')
             meta_ch = ch.meta;
             if isfield(meta_ch,'arr_file'), env_file = meta_ch.arr_file; end
-            if isfield(meta_ch,'range_m'),  range_m  = meta_ch.range_m;  end
-            if isfield(meta_ch,'src_z_m'),  src_z    = meta_ch.src_z_m;  end
-            if isfield(meta_ch,'rcv_z_m'),  rcv_z    = meta_ch.rcv_z_m;  end
+            if isfield(meta_ch,'range_m')
+                range_m = local_extract_numeric(meta_ch.range_m, 'range_m');
+                if numel(range_m) > 1, range_m = range_m(1); end
+            end
+            if isfield(meta_ch,'src_z_m')
+                src_z = local_extract_numeric(meta_ch.src_z_m, 'src_z_m');
+                if numel(src_z) > 1, src_z = src_z(1); end
+            end
+            if isfield(meta_ch,'rcv_z_m')
+                rcv_z = local_extract_numeric(meta_ch.rcv_z_m, 'rcv_z_m');
+                if numel(rcv_z) > 1, rcv_z = rcv_z(1); end
+            end
         end
         if isfield(ch,'Amp')
-            Npaths   = numel(ch.Amp);
-            power_db = 10*log10(sum(abs(ch.Amp).^2) + eps);
+            Amp_val = local_extract_numeric(ch.Amp, 'Amp');
+            Npaths   = numel(Amp_val);
+            power_db = 10*log10(sum(abs(Amp_val).^2) + eps);
         end
 
         fprintf(logFID, '%d,%s,%s,%s,%d,%d,%d,%s,%.2f,%.2f,%.2f,%d,%.3f\n', ...
@@ -177,3 +187,43 @@ fclose(logFID);
 close(h);
 toc;
 fprintf('All done. Augmented data saved under: %s\nLog file: %s\n', OUTPUT_ROOT, LOG_FILE);
+
+%% Helper function to extract numeric values from potentially struct-wrapped fields
+function val = local_extract_numeric(field, field_name)
+% Extract numeric value from a field that may be a struct or numeric array
+% If field is a struct, tries to extract numeric data from common field names
+    if isnumeric(field)
+        val = field;
+    elseif isstruct(field)
+        % Try common field names that might contain the actual numeric value
+        possible_fields = {'data', 'value', 'val', field_name};
+        val = [];
+        for i = 1:numel(possible_fields)
+            if isfield(field, possible_fields{i})
+                candidate = field.(possible_fields{i});
+                if isnumeric(candidate)
+                    val = candidate;
+                    break;
+                end
+            end
+        end
+        if isempty(val)
+            % If no numeric field found, try to get first numeric field
+            fnames = fieldnames(field);
+            for i = 1:numel(fnames)
+                candidate = field.(fnames{i});
+                if isnumeric(candidate)
+                    val = candidate;
+                    break;
+                end
+            end
+        end
+        if isempty(val)
+            warning('Cannot extract numeric value from struct field: %s. Using NaN.', field_name);
+            val = NaN;
+        end
+    else
+        warning('Field %s is neither numeric nor struct (type: %s). Using NaN.', field_name, class(field));
+        val = NaN;
+    end
+end
