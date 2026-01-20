@@ -391,7 +391,7 @@ class TemporalResBlock(nn.Module):
 class SqueezeExcite1d(nn.Module):
     def __init__(self, channels: int, reduction: int):
         super().__init__()
-        hidden = max(1, channels // reduction)
+        hidden = max(1, min(channels, max(8, channels // reduction)))
         self.fc1 = nn.Linear(channels, hidden)
         self.fc2 = nn.Linear(hidden, channels)
 
@@ -426,6 +426,12 @@ class PhyLDCEncoder(nn.Module):
                  dropout: float = 0.1,
                  se_reduction: int = 8):
         super().__init__()
+        if res_kernel_size % 2 == 0:
+            raise ValueError("res_kernel_size must be odd")
+        if not 0 <= dropout < 1:
+            raise ValueError("dropout must be in [0, 1)")
+        if se_reduction <= 0:
+            raise ValueError("se_reduction must be positive")
 
         self.sinc = SincConv1d(
             out_channels=sinc_out_channels,
@@ -602,7 +608,7 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
 
     # logits
     logits = similarity_matrix / temperature
-    logits = logits.masked_fill(mask, float("-inf"))  # 忽略自己
+    logits = logits.masked_fill(mask, torch.finfo(logits.dtype).min)  # 忽略自己
 
     # 对每个样本，只有一个正样本
     # log( exp(sim(pos)/temp) / sum(exp(sim(all)/temp)) )
