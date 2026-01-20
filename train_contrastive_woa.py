@@ -215,14 +215,14 @@ class WOAContrastiveDataset(Dataset):
             pad_len = self.max_len - T
             wav = F.pad(wav, (0, pad_len))
 
-        if not torch.isfinite(wav).all():
+        if torch.any(~torch.isfinite(wav)):
             if wav_path not in self._warned_paths and len(self._warned_paths) < cfg.MAX_NONFINITE_WARNINGS:
                 print(f"[WARN] Non-finite waveform values detected: {wav_path}. Replacing with zeros.")
                 self._warned_paths.add(wav_path)
             wav = torch.nan_to_num(wav, nan=0.0, posinf=0.0, neginf=0.0)
 
         max_abs = wav.abs().max()
-        if torch.isfinite(max_abs) and max_abs > cfg.WAVEFORM_MAX_ABS:
+        if max_abs > cfg.WAVEFORM_MAX_ABS:
             wav = wav / (max_abs + cfg.NORMALIZE_EPS) * cfg.WAVEFORM_MAX_ABS
 
         return wav
@@ -691,7 +691,7 @@ def train_contrastive(cfg: Config):
             _, z1 = model(wav1)   # (encoder_z1, proj_z1)，这里我们只要 proj 输出参与 loss
             _, z2 = model(wav2)
 
-            if not torch.isfinite(z1).all() or not torch.isfinite(z2).all():
+            if torch.any(~torch.isfinite(z1)) or torch.any(~torch.isfinite(z2)):
                 print(f"[WARN] Non-finite embeddings at epoch {epoch}, step {step}, skip batch.")
                 continue
 
