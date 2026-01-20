@@ -68,6 +68,8 @@ class Config:
     MIN_TEMPERATURE = 1e-6
     NORMALIZE_EPS = 1e-6
     MIN_SE_HIDDEN = 8
+    WAVEFORM_MAX_ABS = 1.0
+    MAX_NONFINITE_WARNINGS = 5
 
 
 cfg = Config()
@@ -153,6 +155,8 @@ class WOAContrastiveDataset(Dataset):
         for _id in self.identities:
             self.id_to_class[_id] = self.class_map[self.id_to_class[_id]]
 
+        self._warned_paths: set = set()
+
         print(f"[WOAContrastiveDataset] loaded {len(self.df)} rows, {len(self.identities)} identities "
               f"with >= {min_samples_per_id} samples each.")
 
@@ -193,6 +197,7 @@ class WOAContrastiveDataset(Dataset):
     def _load_and_crop(self, wav_path: str) -> torch.Tensor:
         wav_path = fix_path(wav_path)
         wav, sr = torchaudio.load(wav_path)
+        wav = wav.to(torch.float32)
         if self.MONO:
             if wav.shape[0] > 1:
                 wav = wav.mean(dim=0, keepdim=True)
@@ -209,6 +214,16 @@ class WOAContrastiveDataset(Dataset):
         elif T < self.max_len:
             pad_len = self.max_len - T
             wav = F.pad(wav, (0, pad_len))
+
+        if not torch.isfinite(wav).all():
+            if wav_path not in self._warned_paths and len(self._warned_paths) < cfg.MAX_NONFINITE_WARNINGS:
+                print(f"[WARN] Non-finite waveform values detected: {wav_path}. Replacing with zeros.")
+                self._warned_paths.add(wav_path)
+            wav = torch.nan_to_num(wav, nan=0.0, posinf=0.0, neginf=0.0)
+
+        max_abs = wav.abs().max()
+        if torch.isfinite(max_abs) and max_abs > cfg.WAVEFORM_MAX_ABS:
+            wav = wav / (max_abs + cfg.NORMALIZE_EPS) * cfg.WAVEFORM_MAX_ABS
 
         return wav
 
@@ -675,6 +690,10 @@ def train_contrastive(cfg: Config):
 
             _, z1 = model(wav1)   # (encoder_z1, proj_z1)，这里我们只要 proj 输出参与 loss
             _, z2 = model(wav2)
+
+            if not torch.isfinite(z1).all() or not torch.isfinite(z2).all():
+                print(f"[WARN] Non-finite embeddings at epoch {epoch}, step {step}, skip batch.")
+                continue
 
             loss = contrastive_loss_nt_xent(z1, z2, temperature=cfg.CONTRASTIVE_TEMPERATURE)
 
