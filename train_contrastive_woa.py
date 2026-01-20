@@ -621,7 +621,8 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
 
     # logits
     logits = similarity_matrix / temperature
-    mask_value = max(torch.finfo(logits.dtype).min, cfg.MASK_VALUE_LIMIT)
+    mask_floor = torch.finfo(logits.dtype).min
+    mask_value = cfg.MASK_VALUE_LIMIT if mask_floor < cfg.MASK_VALUE_LIMIT else mask_floor
     logits = logits.masked_fill(mask, mask_value)  # 忽略自己
 
     # 对每个样本，只有一个正样本
@@ -629,7 +630,7 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
     log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
     pos_count = pos_mask.sum(dim=1)
     if torch.any(pos_count == 0):
-        raise ValueError("positive mask has empty rows")
+        raise ValueError("no positive samples found for some instances in the batch")
     loss_pos = (pos_mask * log_prob).sum(dim=1) / pos_count  # [2B]
     loss = -loss_pos.mean()
 
