@@ -20,6 +20,7 @@ function [amp1, delay, SrcAngle, RcvrAngle, NumTopBnc, NumBotBnc, narrmat, Pos] 
 if nargin < 2 || isempty(NarrMax)
     NarrMax = 2000;
 end
+ARRIVAL_COLS = 7; % columns: amp, launch angle, travel time, angle_in/out, top_bounce, bot_bounce
 
 fid = fopen(fname,'r');
 if fid == -1
@@ -78,41 +79,41 @@ while i <= Nlines
         while j <= Nlines && isempty(strtrim(lines{j})), j = j + 1; end
         if j <= Nlines
             nextNums = sscanf(lines{j}, '%f')';
+            narr = nums(1);
+            if narr < 0 || narr > NarrMax
+                i = i + 1;
+                continue;
+            end
+            has_arrival_data     = numel(nextNums) >= 3;
+            is_zero_arrival_mark = (narr == 0 && numel(nextNums) >= 1);
             % arrival line should have >= 3 numeric tokens (amp,time,...)，通常 >=6
-            if numel(nextNums) >= 3
-                % accept this integer as narr, then read that many arrival rows from j
-                narr = nums(1);
-                % guard: if narr seems unreasonable, cap it
-                if narr < 0 || narr > NarrMax
-                    % treat as not a narr marker, skip it
-                    i = i + 1;
-                    continue;
-                end
+            if has_arrival_data || is_zero_arrival_mark
                 % collect arrival rows
                 rows = [];
                 cur = j;
                 cnt = 0;
-                while cur <= Nlines && cnt < narr
-                    lineA = strtrim(lines{cur});
-                    if isempty(lineA)
-                        cur = cur + 1;
-                        continue;
+                if narr > 0
+                    while cur <= Nlines && cnt < narr
+                        lineA = strtrim(lines{cur});
+                        if isempty(lineA)
+                            cur = cur + 1;
+                            continue;
+                        end
+                        vals = sscanf(lineA, '%f')';
+                        % if this line is numeric and plausible arrival (>=3 numbers), accept
+                        if numel(vals) >= 3
+                            rows = [rows; vals]; %#ok<AGROW>
+                            cnt = cnt + 1;
+                            cur = cur + 1;
+                        else
+                            % unexpected token -> break (stop reading)
+                            break;
+                        end
                     end
-                    vals = sscanf(lineA, '%f')';
-                    % if this line is numeric and plausible arrival (>=3 numbers), accept
-                    if numel(vals) >= 3
-                        rows = [rows; vals]; %#ok<AGROW>
-                        cnt = cnt + 1;
-                        cur = cur + 1;
-                    else
-                        % unexpected token -> break (stop reading)
-                        break;
-                    end
+                else
+                    rows = zeros(0, ARRIVAL_COLS);
                 end
-                % if we collected fewer than narr but got >0, still accept collected rows
-                if ~isempty(rows)
-                    arrival_blocks{end+1} = rows; %#ok<AGROW>
-                end
+                arrival_blocks{end+1} = rows; %#ok<AGROW>
                 % advance i to cur
                 i = cur;
                 continue;
