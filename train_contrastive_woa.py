@@ -63,12 +63,14 @@ class Config:
     DROPOUT = 0.1
     SE_REDUCTION = 8
 
+    # 数值稳定性
+    MASK_VALUE_LIMIT = -1e9
+    MIN_TEMPERATURE = 1e-6
+    NORMALIZE_EPS = 1e-6
+    MIN_SE_HIDDEN = 8
+
 
 cfg = Config()
-MASK_VALUE_LIMIT = -1e9  # cap for masked logits to avoid -inf in logsumexp
-MIN_TEMPERATURE = 1e-6  # avoid degenerate temperature values
-NORMALIZE_EPS = 1e-6  # numerical stability for normalization
-MIN_SE_HIDDEN = 8  # minimum squeeze-excite hidden size
 
 # ======================
 #  工具函数
@@ -393,9 +395,7 @@ class TemporalResBlock(nn.Module):
 
 
 def _calc_se_hidden(channels: int, reduction: int) -> int:
-    min_hidden = max(1, channels // reduction)
-    target_hidden = max(MIN_SE_HIDDEN, min_hidden)
-    return min(channels, target_hidden)
+    return min(channels, max(cfg.MIN_SE_HIDDEN, channels // reduction))
 
 
 class SqueezeExcite1d(nn.Module):
@@ -594,13 +594,13 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
     输出:
       标量 loss
     """
-    if temperature < MIN_TEMPERATURE:
-        raise ValueError(f"temperature must be >= {MIN_TEMPERATURE}")
+    if temperature < cfg.MIN_TEMPERATURE:
+        raise ValueError(f"temperature must be >= {cfg.MIN_TEMPERATURE}")
     batch_size = z1.size(0)
 
     # L2 normalize
-    z1 = F.normalize(z1, dim=1, eps=NORMALIZE_EPS)
-    z2 = F.normalize(z2, dim=1, eps=NORMALIZE_EPS)
+    z1 = F.normalize(z1, dim=1, eps=cfg.NORMALIZE_EPS)
+    z2 = F.normalize(z2, dim=1, eps=cfg.NORMALIZE_EPS)
 
     representations = torch.cat([z1, z2], dim=0)  # [2B, D]
     similarity_matrix = F.cosine_similarity(
@@ -621,9 +621,7 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
 
     # logits
     logits = similarity_matrix / temperature
-    mask_value = torch.finfo(logits.dtype).min
-    if mask_value < MASK_VALUE_LIMIT:
-        mask_value = MASK_VALUE_LIMIT
+    mask_value = max(torch.finfo(logits.dtype).min, cfg.MASK_VALUE_LIMIT)
     logits = logits.masked_fill(mask, mask_value)  # 忽略自己
 
     # 对每个样本，只有一个正样本
