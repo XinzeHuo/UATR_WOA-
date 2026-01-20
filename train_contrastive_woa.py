@@ -683,6 +683,8 @@ def train_contrastive(cfg: Config):
     for epoch in range(1, cfg.N_EPOCHS + 1):
         model.train()
         epoch_loss = 0.0
+        processed_steps = 0
+        skipped_steps = 0
         pbar = tqdm(loader, desc=f"Epoch {epoch}/{cfg.N_EPOCHS}")
         for step, (wav1, wav2, cls) in enumerate(pbar, start=1):
             wav1 = wav1.to(device)  # [B, 1, T]
@@ -693,6 +695,7 @@ def train_contrastive(cfg: Config):
 
             if torch.any(~torch.isfinite(z1)) or torch.any(~torch.isfinite(z2)):
                 print(f"[WARN] Non-finite embeddings at epoch {epoch}, step {step}, skip batch.")
+                skipped_steps += 1
                 continue
 
             loss = contrastive_loss_nt_xent(z1, z2, temperature=cfg.CONTRASTIVE_TEMPERATURE)
@@ -702,11 +705,14 @@ def train_contrastive(cfg: Config):
             optimizer.step()
 
             epoch_loss += loss.item()
-            if step % cfg.LOG_INTERVAL == 0:
-                pbar.set_postfix({"loss": epoch_loss / step})
+            processed_steps += 1
+            if step % cfg.LOG_INTERVAL == 0 and processed_steps > 0:
+                pbar.set_postfix({"loss": epoch_loss / processed_steps})
 
-        avg_epoch_loss = epoch_loss / len(loader)
+        avg_epoch_loss = epoch_loss / max(1, processed_steps)
         print(f"[Epoch {epoch}] avg contrastive loss = {avg_epoch_loss:.4f}")
+        if skipped_steps > 0:
+            print(f"[Epoch {epoch}] skipped {skipped_steps} batches due to non-finite embeddings.")
 
         # 每若干 epoch 保存一下 encoder 权重（用于 Stage3）
         if epoch % 10 == 0 or epoch == cfg.N_EPOCHS:
