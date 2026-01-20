@@ -65,7 +65,7 @@ class Config:
 
 
 cfg = Config()
-MASK_VALUE_LIMIT = -1e9
+MASK_VALUE_LIMIT = -1e9  # cap for masked logits to avoid -inf in logsumexp
 
 # ======================
 #  工具函数
