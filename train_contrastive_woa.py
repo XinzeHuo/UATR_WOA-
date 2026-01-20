@@ -66,6 +66,7 @@ class Config:
 
 cfg = Config()
 MASK_VALUE_LIMIT = -1e9  # cap for masked logits to avoid -inf in logsumexp
+MIN_TEMPERATURE = 1e-6
 
 # ======================
 #  工具函数
@@ -591,8 +592,8 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
     输出:
       标量 loss
     """
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
+    if temperature < MIN_TEMPERATURE:
+        raise ValueError(f"temperature must be >= {MIN_TEMPERATURE}")
     batch_size = z1.size(0)
 
     # L2 normalize
@@ -618,13 +619,18 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
 
     # logits
     logits = similarity_matrix / temperature
-    mask_value = max(torch.finfo(logits.dtype).min, MASK_VALUE_LIMIT)
+    mask_value = torch.finfo(logits.dtype).min
+    if mask_value < MASK_VALUE_LIMIT:
+        mask_value = MASK_VALUE_LIMIT
     logits = logits.masked_fill(mask, mask_value)  # 忽略自己
 
     # 对每个样本，只有一个正样本
     # log( exp(sim(pos)/temp) / sum(exp(sim(all)/temp)) )
     log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
-    loss_pos = (pos_mask * log_prob).sum(dim=1) / pos_mask.sum(dim=1).clamp(min=1)  # [2B]
+    pos_count = pos_mask.sum(dim=1)
+    if torch.any(pos_count == 0):
+        raise ValueError("positive mask has empty rows")
+    loss_pos = (pos_mask * log_prob).sum(dim=1) / pos_count  # [2B]
     loss = -loss_pos.mean()
 
     return loss
