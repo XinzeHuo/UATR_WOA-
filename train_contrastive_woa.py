@@ -66,7 +66,9 @@ class Config:
 
 cfg = Config()
 MASK_VALUE_LIMIT = -1e9  # cap for masked logits to avoid -inf in logsumexp
-MIN_TEMPERATURE = 1e-6
+MIN_TEMPERATURE = 1e-6  # avoid degenerate temperature values
+NORMALIZE_EPS = 1e-6  # numerical stability for normalization
+MIN_SE_HIDDEN = 8  # minimum squeeze-excite hidden size
 
 # ======================
 #  工具函数
@@ -392,7 +394,7 @@ class TemporalResBlock(nn.Module):
 
 def _calc_se_hidden(channels: int, reduction: int) -> int:
     min_hidden = max(1, channels // reduction)
-    target_hidden = max(8, min_hidden)
+    target_hidden = max(MIN_SE_HIDDEN, min_hidden)
     return min(channels, target_hidden)
 
 
@@ -597,8 +599,8 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
     batch_size = z1.size(0)
 
     # L2 normalize
-    z1 = F.normalize(z1, dim=1, eps=1e-6)
-    z2 = F.normalize(z2, dim=1, eps=1e-6)
+    z1 = F.normalize(z1, dim=1, eps=NORMALIZE_EPS)
+    z2 = F.normalize(z2, dim=1, eps=NORMALIZE_EPS)
 
     representations = torch.cat([z1, z2], dim=0)  # [2B, D]
     similarity_matrix = F.cosine_similarity(
