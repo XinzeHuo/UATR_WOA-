@@ -57,6 +57,20 @@ class Config:
     EMBED_DIM = 128
     PROJ_DIM = 128
 
+    # 更丰富的编码器结构
+    RES_KERNEL_SIZE = 5
+    RES_DILATIONS = (1, 2, 4)
+    DROPOUT = 0.1
+    SE_REDUCTION = 8
+
+    # 数值稳定性
+    MASK_VALUE_LIMIT = -1e9
+    MIN_TEMPERATURE = 1e-6
+    NORMALIZE_EPS = 1e-6
+    MIN_SE_HIDDEN = 8
+    WAVEFORM_MAX_ABS = 1.0
+    MAX_NONFINITE_WARNINGS = 5
+
 
 cfg = Config()
 
@@ -141,6 +155,8 @@ class WOAContrastiveDataset(Dataset):
         for _id in self.identities:
             self.id_to_class[_id] = self.class_map[self.id_to_class[_id]]
 
+        self._warned_paths: set = set()
+
         print(f"[WOAContrastiveDataset] loaded {len(self.df)} rows, {len(self.identities)} identities "
               f"with >= {min_samples_per_id} samples each.")
 
@@ -181,6 +197,7 @@ class WOAContrastiveDataset(Dataset):
     def _load_and_crop(self, wav_path: str) -> torch.Tensor:
         wav_path = fix_path(wav_path)
         wav, sr = torchaudio.load(wav_path)
+        wav = wav.to(torch.float32)
         if self.MONO:
             if wav.shape[0] > 1:
                 wav = wav.mean(dim=0, keepdim=True)
@@ -197,6 +214,16 @@ class WOAContrastiveDataset(Dataset):
         elif T < self.max_len:
             pad_len = self.max_len - T
             wav = F.pad(wav, (0, pad_len))
+
+        if torch.any(~torch.isfinite(wav)):
+            if wav_path not in self._warned_paths and len(self._warned_paths) < cfg.MAX_NONFINITE_WARNINGS:
+                print(f"[WARN] Non-finite waveform values detected: {wav_path}. Replacing with zeros.")
+                self._warned_paths.add(wav_path)
+            wav = torch.nan_to_num(wav, nan=0.0, posinf=0.0, neginf=0.0)
+
+        max_abs = wav.abs().max()
+        if max_abs > cfg.WAVEFORM_MAX_ABS:
+            wav = wav / (max_abs + cfg.NORMALIZE_EPS) * cfg.WAVEFORM_MAX_ABS
 
         return wav
 
@@ -362,6 +389,45 @@ class DynamicConv1d(nn.Module):
 
 
 # ======================
+#  辅助模块：残差卷积 & 通道注意力
+# ======================
+
+class TemporalResBlock(nn.Module):
+    def __init__(self, channels: int, kernel_size: int, dilation: int, dropout: float):
+        super().__init__()
+        padding = (kernel_size // 2) * dilation
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=padding, dilation=dilation)
+        self.bn1 = nn.BatchNorm1d(channels)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=padding, dilation=dilation)
+        self.bn2 = nn.BatchNorm1d(channels)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        residual = x
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.dropout(self.bn2(self.conv2(x)))
+        return F.relu(x + residual)
+
+
+def _calc_se_hidden(channels: int, reduction: int) -> int:
+    return min(channels, max(cfg.MIN_SE_HIDDEN, channels // reduction))
+
+
+class SqueezeExcite1d(nn.Module):
+    def __init__(self, channels: int, reduction: int):
+        super().__init__()
+        hidden = _calc_se_hidden(channels, reduction)
+        self.fc1 = nn.Linear(channels, hidden)
+        self.fc2 = nn.Linear(hidden, channels)
+
+    def forward(self, x):
+        scale = F.adaptive_avg_pool1d(x, 1).squeeze(-1)
+        scale = F.relu(self.fc1(scale))
+        scale = torch.sigmoid(self.fc2(scale)).unsqueeze(-1)
+        return x * scale
+
+
+# ======================
 #  Encoder: Sinc 前端 + TF-like block + Dynamic Conv + GlobalPool
 # ======================
 
@@ -379,8 +445,18 @@ class PhyLDCEncoder(nn.Module):
                  dyn_hidden_channels: int = 128,
                  dyn_kernel_size: int = 7,
                  dyn_num_kernels: int = 4,
-                 embed_dim: int = 128):
+                 embed_dim: int = 128,
+                 res_kernel_size: int = 5,
+                 res_dilations: Tuple[int, ...] = (1, 2, 4),
+                 dropout: float = 0.1,
+                 se_reduction: int = 8):
         super().__init__()
+        if res_kernel_size % 2 == 0:
+            raise ValueError("res_kernel_size must be odd")
+        if not 0 <= dropout <= 1:
+            raise ValueError("dropout must be in [0, 1]")
+        if se_reduction <= 0:
+            raise ValueError("se_reduction must be positive")
 
         self.sinc = SincConv1d(
             out_channels=sinc_out_channels,
@@ -401,6 +477,20 @@ class PhyLDCEncoder(nn.Module):
             kernel_size=1
         )
         self.bn2 = nn.BatchNorm1d(dyn_hidden_channels)
+        self.in_norm = nn.InstanceNorm1d(dyn_hidden_channels, affine=True)
+
+        self.temporal_blocks = nn.Sequential(
+            *[
+                TemporalResBlock(
+                    channels=dyn_hidden_channels,
+                    kernel_size=res_kernel_size,
+                    dilation=dilation,
+                    dropout=dropout
+                )
+                for dilation in res_dilations
+            ]
+        )
+        self.se = SqueezeExcite1d(dyn_hidden_channels, reduction=se_reduction)
 
         # 动态卷积 block
         self.dynamic_conv = DynamicConv1d(
@@ -434,7 +524,11 @@ class PhyLDCEncoder(nn.Module):
 
         # TF-like block: depthwise + pointwise
         x = F.relu(self.depthwise_conv(x))
-        x = F.relu(self.bn2(self.pointwise_conv(x)))   # [B, C_hidden, T]
+        x = self.pointwise_conv(x)
+        x = F.relu(self.in_norm(self.bn2(x)))   # [B, C_hidden, T]
+
+        x = self.temporal_blocks(x)
+        x = self.se(x)
 
         # Dynamic Conv block
         x = F.relu(self.bn3(self.dynamic_conv(x)))     # [B, C_hidden, T]
@@ -483,7 +577,11 @@ class ContrastiveModel(nn.Module):
             dyn_hidden_channels=cfg.DYN_HIDDEN_CHANNELS,
             dyn_kernel_size=cfg.DYN_KERNEL_SIZE,
             dyn_num_kernels=cfg.DYN_NUM_BASE_KERNELS,
-            embed_dim=cfg.EMBED_DIM
+            embed_dim=cfg.EMBED_DIM,
+            res_kernel_size=cfg.RES_KERNEL_SIZE,
+            res_dilations=cfg.RES_DILATIONS,
+            dropout=cfg.DROPOUT,
+            se_reduction=cfg.SE_REDUCTION
         )
         self.proj = ProjectionHead(cfg.EMBED_DIM, cfg.PROJ_DIM)
 
@@ -511,16 +609,18 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
     输出:
       标量 loss
     """
+    if temperature < cfg.MIN_TEMPERATURE:
+        raise ValueError(f"temperature must be >= {cfg.MIN_TEMPERATURE}")
     batch_size = z1.size(0)
 
     # L2 normalize
-    z1 = F.normalize(z1, dim=1)
-    z2 = F.normalize(z2, dim=1)
+    z1 = F.normalize(z1, dim=1, eps=cfg.NORMALIZE_EPS)
+    z2 = F.normalize(z2, dim=1, eps=cfg.NORMALIZE_EPS)
 
     representations = torch.cat([z1, z2], dim=0)  # [2B, D]
     similarity_matrix = F.cosine_similarity(
         representations.unsqueeze(1), representations.unsqueeze(0), dim=-1
-    )  # [2B, 2B]
+    )
 
     # 构造正样本 mask
     labels = torch.arange(batch_size, device=z1.device)
@@ -536,13 +636,17 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
 
     # logits
     logits = similarity_matrix / temperature
-    logits = logits.masked_fill(mask, -9e15)  # 忽略自己
+    mask_floor = torch.finfo(logits.dtype).min
+    mask_value = cfg.MASK_VALUE_LIMIT if mask_floor < cfg.MASK_VALUE_LIMIT else mask_floor
+    logits = logits.masked_fill(mask, mask_value)  # 忽略自己
 
     # 对每个样本，只有一个正样本
     # log( exp(sim(pos)/temp) / sum(exp(sim(all)/temp)) )
-    exp_logits = torch.exp(logits)
-    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-12)
-    loss_pos = (pos_mask * log_prob).sum(dim=1) / pos_mask.sum(dim=1)  # [2B]
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    pos_count = pos_mask.sum(dim=1)
+    if torch.any(pos_count == 0):
+        raise ValueError("no positive samples found for some instances in the batch")
+    loss_pos = (pos_mask * log_prob).sum(dim=1) / pos_count  # [2B]
     loss = -loss_pos.mean()
 
     return loss
@@ -579,6 +683,8 @@ def train_contrastive(cfg: Config):
     for epoch in range(1, cfg.N_EPOCHS + 1):
         model.train()
         epoch_loss = 0.0
+        processed_steps = 0
+        skipped_steps = 0
         pbar = tqdm(loader, desc=f"Epoch {epoch}/{cfg.N_EPOCHS}")
         for step, (wav1, wav2, cls) in enumerate(pbar, start=1):
             wav1 = wav1.to(device)  # [B, 1, T]
@@ -587,6 +693,11 @@ def train_contrastive(cfg: Config):
             _, z1 = model(wav1)   # (encoder_z1, proj_z1)，这里我们只要 proj 输出参与 loss
             _, z2 = model(wav2)
 
+            if torch.any(~torch.isfinite(z1)) or torch.any(~torch.isfinite(z2)):
+                print(f"[WARN] Non-finite embeddings at epoch {epoch}, step {step}, skip batch.")
+                skipped_steps += 1
+                continue
+
             loss = contrastive_loss_nt_xent(z1, z2, temperature=cfg.CONTRASTIVE_TEMPERATURE)
 
             optimizer.zero_grad()
@@ -594,11 +705,14 @@ def train_contrastive(cfg: Config):
             optimizer.step()
 
             epoch_loss += loss.item()
-            if step % cfg.LOG_INTERVAL == 0:
-                pbar.set_postfix({"loss": epoch_loss / step})
+            processed_steps += 1
+            if step % cfg.LOG_INTERVAL == 0 and processed_steps > 0:
+                pbar.set_postfix({"loss": epoch_loss / processed_steps})
 
-        avg_epoch_loss = epoch_loss / len(loader)
+        avg_epoch_loss = epoch_loss / max(1, processed_steps)
         print(f"[Epoch {epoch}] avg contrastive loss = {avg_epoch_loss:.4f}")
+        if skipped_steps > 0:
+            print(f"[Epoch {epoch}] skipped {skipped_steps} batches due to non-finite embeddings.")
 
         # 每若干 epoch 保存一下 encoder 权重（用于 Stage3）
         if epoch % 10 == 0 or epoch == cfg.N_EPOCHS:
