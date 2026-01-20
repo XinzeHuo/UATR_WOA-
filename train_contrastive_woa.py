@@ -65,6 +65,7 @@ class Config:
 
 
 cfg = Config()
+MASK_VALUE_LIMIT = -1e9
 
 # ======================
 #  工具函数
@@ -388,12 +389,16 @@ class TemporalResBlock(nn.Module):
         return F.relu(x + residual)
 
 
+def _calc_se_hidden(channels: int, reduction: int) -> int:
+    min_hidden = max(1, channels // reduction)
+    target_hidden = max(8, min_hidden)
+    return min(channels, target_hidden)
+
+
 class SqueezeExcite1d(nn.Module):
     def __init__(self, channels: int, reduction: int):
         super().__init__()
-        min_hidden = max(1, channels // reduction)
-        target_hidden = max(8, min_hidden)
-        hidden = min(channels, target_hidden)
+        hidden = _calc_se_hidden(channels, reduction)
         self.fc1 = nn.Linear(channels, hidden)
         self.fc2 = nn.Linear(hidden, channels)
 
@@ -595,7 +600,9 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
     z2 = F.normalize(z2, dim=1, eps=1e-6)
 
     representations = torch.cat([z1, z2], dim=0)  # [2B, D]
-    similarity_matrix = representations @ representations.t()
+    similarity_matrix = F.cosine_similarity(
+        representations.unsqueeze(1), representations.unsqueeze(0), dim=-1
+    )
 
     # 构造正样本 mask
     labels = torch.arange(batch_size, device=z1.device)
@@ -611,9 +618,7 @@ def contrastive_loss_nt_xent(z1, z2, temperature: float = 0.1):
 
     # logits
     logits = similarity_matrix / temperature
-    mask_value = torch.finfo(logits.dtype).min
-    if mask_value < -1e9:
-        mask_value = -1e9
+    mask_value = max(torch.finfo(logits.dtype).min, MASK_VALUE_LIMIT)
     logits = logits.masked_fill(mask, mask_value)  # 忽略自己
 
     # 对每个样本，只有一个正样本
